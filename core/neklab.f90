@@ -33,9 +33,11 @@
       
       ! Definition of the abstract vectors in the Nek framework.
          public :: nek_dvector
+         public :: nek_zvector
       
       ! Implementation of the standard linear operators.
          public :: exptA_linop
+         public :: resolvent_linop
       
       !
          public :: linear_stability_analysis_fixed_point
@@ -43,4 +45,6 @@
       
       ! Various utilities.
          public :: nek2vec, vec2nek
+         public :: neklab_forcing
+         public :: outpost_vec
       end module neklab

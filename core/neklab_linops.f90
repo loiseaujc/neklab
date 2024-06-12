@@ -8,7 +8,10 @@
          use LightKrylov, only: abstract_linop_rdp, abstract_vector_rdp
          ! Abstract types for complex-valued linear operator and vectors.
          use LightKrylov, only: abstract_linop_cdp, abstract_vector_cdp
-         use LightKrylov, only: Id_cdp
+         use LightKrylov, only: Id_cdp, axpby_linop_cdp
+         ! Iterative linear solver for the resolvent computation.
+         use LightKrylov, only: gmres, gmres_dp_opts
+         use LightKrylov, only: rtol_dp, atol_dp
       ! Extensions of the abstract vector types to nek data format.
          use neklab_vectors
          implicit none
@@ -16,7 +19,20 @@
          include "TOTAL"
          include "ADJOINT"
          private
-      
+
+         complex(kind=dp), parameter :: one_cdp = cmplx(1.0_dp, 0.0_dp, kind=dp)
+         complex(kind=dp), parameter :: im_dp   = cmplx(0.0_dp, 1.0_dp, kind=dp)
+         real(kind=dp), parameter :: pi_ = 4.0_dp * atan(1.0_dp)
+         procedure(neklab_forcing_interface), pointer, public :: neklab_forcing => dummy_neklab_forcing
+
+         interface
+            subroutine neklab_forcing_interface(ffx, ffy, ffz, ix, iy, iz, ieg)
+               import dp
+               real(kind=dp), intent(inout) :: ffx, ffy, ffz
+               integer      , intent(in)    :: ix, iy, iz, ieg
+            end subroutine neklab_forcing_interface
+         end interface
+
       !------------------------------------------
       !-----     EXPONENTIAL PROPAGATOR     -----
       !------------------------------------------
@@ -44,7 +60,18 @@
             procedure, pass(self), public :: rmatvec => zexptA_rmatvec
             procedure, pass(self), public :: init => init_zexptA
          end type zexptA_linop
-      
+
+         type, extends(abstract_linop_cdp), public :: resolvent_linop
+            real(kind=dp) :: omega
+            type(nek_dvector) :: baseflow
+         contains
+            private
+            procedure, pass(self), public :: matvec => resolvent_matvec
+            procedure, pass(self), public :: rmatvec => resolvent_rmatvec
+         end type resolvent_linop
+
+         type(nek_zvector) :: resolvent_forcing
+
       contains
       
       !--------------------------------------------------
@@ -122,7 +149,7 @@
             end select
       
       ! Integrate the equations forward in time.
-            time = 0.0_dp
+            time = 0.0_dp ; lastep = 0 ; fintim = param(10)
             do istep = 1, nsteps
                call nek_advance()
             end do
@@ -154,7 +181,7 @@
             end select
       
       ! Integrate the equations forward in time.
-            time = 0.0_dp
+            time = 0.0_dp ; lastep = 0 ; fintim = param(10)
             do istep = 1, nsteps
                call nek_advance()
             end do
@@ -169,9 +196,9 @@
             return
          end subroutine exptA_rmatvec
  
-      !--------------------------------------------------
-      !-----     TYPE-BOUND PROCEDURE FOR exptA     -----
-      !--------------------------------------------------
+      !---------------------------------------------------
+      !-----     TYPE-BOUND PROCEDURE FOR zexptA     -----
+      !---------------------------------------------------
       
          subroutine init_zexptA(self)
             class(zexptA_linop), intent(in) :: self
@@ -248,10 +275,11 @@
             end select
       
       ! Integrate the equations forward in time.
-            time = 0.0_dp
+            time = 0.0_dp ; lastep = 0 ; fintim = param(10)
             do istep = 1, nsteps
                call nek_advance()
             end do
+            call outpost(vxp, vyp, vzp, prp, tp, "prt")
       
       ! Copy the final solution to vector.
             select type (vec_out)
@@ -270,10 +298,11 @@
             end select
       
       ! Integrate the equations forward in time.
-            time = 0.0_dp
+            time = 0.0_dp ; lastep = 0 ; fintim = param(10)
             do istep = 1, nsteps
                call nek_advance()
             end do
+            call outpost(vxp, vyp, vzp, prp, tp, "adj")
       
       ! Copy the final solution to vector.
             select type (vec_out)
@@ -306,7 +335,7 @@
             end select
       
       ! Integrate the equations forward in time.
-            time = 0.0_dp
+            time = 0.0_dp ; lastep = 0 ; fintim = param(10)
             do istep = 1, nsteps
                call nek_advance()
             end do
@@ -328,7 +357,7 @@
             end select
       
       ! Integrate the equations forward in time.
-            time = 0.0_dp
+            time = 0.0_dp ; lastep = 0 ; fintim = param(10)
             do istep = 1, nsteps
                call nek_advance()
             end do
@@ -342,5 +371,149 @@
             ifadj = .false.
             return
          end subroutine zexptA_rmatvec
-      
+
+         !------------------------------------------------------------
+         !-----     TYPE-BOUND PROCEDURE FOR RESOLVENT LINOP     -----
+         !------------------------------------------------------------
+
+          subroutine resolvent_matvec(self, vec_in, vec_out)
+            class(resolvent_linop), intent(in) :: self
+            class(abstract_vector_cdp), intent(in) :: vec_in
+            class(abstract_vector_cdp), intent(out) :: vec_out
+
+            !----- Internal variables -----
+            ! Complex-valued exponential propagator.
+            class(zexptA_linop), allocatable :: exptA
+            class(Id_cdp), allocatable :: Id
+            type(nek_zvector) :: b
+            real(kind=dp) :: tau
+
+            !------------------------------------------
+            !-----     Setting-up the problem     -----
+            !------------------------------------------
+
+               ! Integration time.
+               if (self%omega == 0.0_dp) then
+                  tau = 1.0_dp
+               else
+                  tau = 2*pi_ / abs(self%omega)
+               endif
+
+               ! Initialize required operators.
+               exptA = zexptA_linop(tau, self%baseflow) ; call exptA%init()
+               Id = Id_cdp()
+
+            !-------------------------------------
+            !-----     Computing the rhs     -----
+            !-------------------------------------
+
+            ! Initialize rhs vector.
+            call b%zero()
+
+            ! Set the forcing function.
+            neklab_forcing => neklab_resolvent_forcing
+
+            ! ----- Real part -----
+
+            ! Set initial condition to zero.
+            call opzero(vxp, vyp, vzp)
+
+            ! Time integration.
+            time = 0.0_dp ; lastep = 0 ; fintim = param(10)
+            do istep = 1, nsteps
+               ! Zero-out the resolvent forcing.
+               call resolvent_forcing%zero()
+               ! Update the resolvent forcing for the corresponding time.
+               call resolvent_forcing%add(vec_in)
+               call resolvent_forcing%scal(exp(im_dp*self%omega*time))
+               ! Nek5000 time-step.
+               call nek_advance()
+            enddo
+
+            ! Copy the real-part of the response.
+            call nek2vec(b%re, vxp, vyp, vzp, prp, tp)
+            call outpost_vec(b%re, "bre")
+
+            ! ----- Imaginary part -----
+
+            ! Set initial condition to zero.
+            call opzero(vxp, vyp, vzp)
+
+            ! Time integration.
+            time = 0.0_dp ; lastep = 0 ; fintim = param(10)
+            do istep = 1, nsteps
+               ! Zero-out the resolvent forcing.
+               call resolvent_forcing%zero()
+               ! Update the resolvent forcing for the corresponding time.
+               call resolvent_forcing%add(vec_in)
+               call resolvent_forcing%scal(exp(im_dp*self%omega*time))
+               resolvent_forcing%re = resolvent_forcing%im
+               ! Nek5000 time-step.
+               call nek_advance()
+            enddo
+
+            ! Copy the imaginary-part of the response.
+            call nek2vec(b%im, vxp, vyp, vzp, prp, tp)
+            call outpost_vec(b%im, "bim")
+
+            !------------------------------------------------
+            !-----     Apply the resolvent operator     -----
+            !------------------------------------------------
+
+            neklab_forcing => dummy_neklab_forcing
+
+            block
+               ! GMRES-required variables.
+               type(gmres_dp_opts) :: opts
+               integer :: info
+               class(axpby_linop_cdp), allocatable :: S
+
+               ! Initialize operator S = I - exptA.
+               S = axpby_linop_cdp(Id, exptA, one_cdp, -one_cdp)
+               ! GMRES default options.
+               opts = gmres_dp_opts(kdim=128, verbose=.false., atol=1.0e-8_dp, rtol=1.0e-6_dp, maxiter=10)
+               ! GMRES solver.
+               call vec_out%zero()
+               call gmres(S, b, vec_out, info, options=opts)
+            end block
+
+            return
+         end subroutine resolvent_matvec
+ 
+         subroutine resolvent_rmatvec(self, vec_in, vec_out)
+            class(resolvent_linop), intent(in) :: self
+            class(abstract_vector_cdp), intent(in) :: vec_in
+            class(abstract_vector_cdp), intent(out) :: vec_out
+            return
+         end subroutine resolvent_rmatvec
+
+         !-----------------------------
+         !-----     UTILITIES     -----
+         !-----------------------------
+
+         subroutine dummy_neklab_forcing(ffx, ffy, ffz, ix, iy, iz, ieg)
+            real(kind=dp), intent(inout) :: ffx, ffy, ffz
+            integer      , intent(in)    :: ix, iy, iz, ieg
+            return
+         end subroutine dummy_neklab_forcing
+
+         subroutine neklab_resolvent_forcing(ffx, ffy, ffz, ix, iy, iz, ieg)
+            real(kind=dp), intent(inout) :: ffx, ffy, ffz
+            integer      , intent(in)    :: ix, iy, iz, ieg
+
+            ! Internal variables.
+            integer :: iel, ip
+!            integer, external :: gllel
+
+            ! Local index.
+            iel = gllel(ieg)
+            ip  = ix + nx1*(iy - 1 + ny1*(iz -1 + nz1*(iel - 1)))
+            ! Update forcing.
+            associate(force => resolvent_forcing%re)
+               ffx = ffx + force%vx(ip)
+               ffy = ffy + force%vy(ip)
+               if (if3d) ffz = ffz + force%vz(ip)
+            end associate
+            return
+         end subroutine neklab_resolvent_forcing
       end module neklab_linops
