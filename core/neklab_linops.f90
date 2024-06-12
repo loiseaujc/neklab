@@ -159,6 +159,7 @@
             select type (vec_out)
             type is (nek_dvector)
                call nek2vec(vec_out, vxp, vyp, vzp, prp, tp)
+               call outpost_vec(vec_out, "prt")
             end select
       
             return
@@ -386,7 +387,7 @@
             ! Complex-valued exponential propagator.
             class(exptA_linop), allocatable :: exptA
             class(Id_rdp), allocatable :: Id
-            type(nek_zvector) :: b
+            type(nek_dvector) :: b
             real(kind=dp) :: tau
 
             !------------------------------------------
@@ -414,7 +415,7 @@
             ! Set the forcing function.
             neklab_forcing => neklab_resolvent_forcing
 
-            ! ----- Real part -----
+            ! ----- Real part only (perf. trick) -----
 
             ! Set initial condition to zero.
             call opzero(vxp, vyp, vzp)
@@ -432,53 +433,32 @@
             enddo
 
             ! Copy the real-part of the response.
-            call nek2vec(b%re, vxp, vyp, vzp, prp, tp)
-            call outpost_vec(b%re, "bre")
+            call nek2vec(b, vxp, vyp, vzp, prp, tp)
 
-            ! ! ----- Imaginary part -----
-            !
-            ! ! Set initial condition to zero.
-            ! call opzero(vxp, vyp, vzp)
-            !
-            ! ! Time integration.
-            ! time = 0.0_dp ; lastep = 0 ; fintim = param(10)
-            ! do istep = 1, nsteps
-            !    ! Zero-out the resolvent forcing.
-            !    call resolvent_forcing%zero()
-            !    ! Update the resolvent forcing for the corresponding time.
-            !    call resolvent_forcing%add(vec_in)
-            !    call resolvent_forcing%scal(exp(im_dp*self%omega*time))
-            !    resolvent_forcing%re = resolvent_forcing%im
-            !    ! Nek5000 time-step.
-            !    call nek_advance()
-            ! enddo
-            !
-            ! ! Copy the imaginary-part of the response.
-            ! call nek2vec(b%im, vxp, vyp, vzp, prp, tp)
-            ! call outpost_vec(b%im, "bim")
+            neklab_forcing => dummy_neklab_forcing
 
             !------------------------------------------------
             !-----     Apply the resolvent operator     -----
             !------------------------------------------------
-
-            neklab_forcing => dummy_neklab_forcing
 
             block
                ! GMRES-required variables.
                type(gmres_dp_opts) :: opts
                integer :: info
                class(axpby_linop_rdp), allocatable :: S
+               real(kind=dp) :: alpha
 
                ! Initialize operator S = I - exptA.
                S = axpby_linop_rdp(Id, exptA, 1.0_dp, -1.0_dp)
                ! GMRES default options.
                opts = gmres_dp_opts(kdim=64, verbose=.false., atol=1.0e-8_dp, rtol=1.0e-6_dp, maxiter=10)
                ! GMRES solver.
-               call vec_out%zero()
+               call vec_out%zero() ; alpha = b%norm() ; call b%scal(1.0_dp / alpha)
                select type(vec_out)
                type is(nek_zvector)
-                  call gmres(S, b%re, vec_out%re, info, options=opts)
+                  call gmres(S, b, vec_out%re, info, options=opts)
                end select
+               call vec_out%scal(cmplx(alpha, 0.0_dp, kind=dp))
             end block
 
             ! ----- Imaginary part -----
