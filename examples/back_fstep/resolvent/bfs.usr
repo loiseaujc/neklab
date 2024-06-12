@@ -1,0 +1,116 @@
+c-----------------------------------------------------------------------
+      subroutine userchk
+      use neklab
+      include 'SIZE'
+      include 'TOTAL'
+
+        type(nek_dvector), allocatable :: bf
+        integer, parameter :: nsv = 4, kdim = 512
+    	type(resolvent_linop), allocatable :: R
+        real(kind=dp), parameter :: omega = 1.0_dp
+        type(nek_zvector), allocatable :: forcing, response
+        real(kind=dp) :: alpha
+	
+    	if (istep.eq.0) then
+ 
+            ! Load forcing.
+            allocate(forcing, response)
+            call load_fld("forbfs0.f00001")
+            call nek2vec(forcing%re, vx, vy, vz, pr, t)
+            alpha = forcing%norm()
+            call forcing%scal(cmplx(1.0_dp, 0.0_dp)/alpha)
+
+            ! Load baseflow.
+    		allocate(bf)
+    		call load_fld("BF_bfs0.f00001")
+    		call nek2vec(bf, vx, vy, vz, pr, t)
+
+            ! Initialize resolvent operator.
+            R = resolvent_linop(omega, bf)
+
+            call R%matvec(forcing, response)
+
+            call outpost_vec(forcing%re, "fRe")
+            call outpost_vec(forcing%im, "fIm")
+            call outpost_vec(response%re, "rRe")
+            call outpost_vec(response%im, "rIm")
+
+    		call nek_end()
+    	endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userf (ix,iy,iz,ieg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+
+      ffx = 0.0d0
+      ffy = 0.0d0
+      ffz = 0.0d0
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine useric (ix,iy,iz,ieg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+      integer e
+
+      if (JP.eq.0) then         ! velocity
+         e  = gllel(ieg)
+         ux=1.0d0
+         uy=0.0d0
+         uz=0.0d0
+         temp=0.0d0
+      else                      ! perturbation
+         ux = 0.0d0
+         uy = 0.0d0
+         uz = 0.0d0
+         temp = 0.0d0
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userbc (ix,iy,iz,iside,ieg)
+      include 'SIZE'
+      include 'TOTAL'
+      include 'NEKUSE'
+      integer e
+
+      if (JP.eq.0) then         ! velocity
+         ux = 1.0d0
+         uy = 0.0d0
+         uz = 0.0d0
+         temp=0.0d0
+      else                      ! perturbation
+         ux = 0.0d0
+         uy = 0.0d0
+         uz = 0.0d0
+         temp = 0.0d0
+      endif
+
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat
+	include 'SIZE'
+	include 'TOTAL'
+
+        call setbc(5, 1, "W  ")
+        call setbc(2, 1, "v  ")
+        call setbc(3, 1, "v  ")
+        call setbc(4, 1, "SYM")
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat2
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat3
+      return
+      end
