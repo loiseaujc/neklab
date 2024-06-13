@@ -7,7 +7,7 @@ c-----------------------------------------------------------------------
         type(nek_dvector), allocatable :: bf
         integer, parameter :: nsv = 4, kdim = 512
     	type(resolvent_linop), allocatable :: R
-        real(kind=dp), parameter :: omega = 1.0_dp
+        real(kind=dp), parameter :: omega = 2.0_dp
         type(nek_zvector), allocatable :: forcing, response
         real(kind=dp) :: alpha
 	
@@ -15,10 +15,9 @@ c-----------------------------------------------------------------------
  
             ! Load forcing.
             allocate(forcing, response)
-            call load_fld("forbfs0.f00001")
-            call nek2vec(forcing%re, vx, vy, vz, pr, t)
-            alpha = forcing%norm()
-            call forcing%scal(cmplx(1.0_dp, 0.0_dp, kind=dp)/alpha)
+            call forcing%zero() ; call response%zero()
+            call make_actuator(forcing)
+            call outpost_vec(forcing%re, "for")
 
             ! Load baseflow.
     		allocate(bf)
@@ -32,6 +31,10 @@ c-----------------------------------------------------------------------
 
             call outpost_vec(response%re, "rRe")
             call outpost_vec(response%im, "rIm")
+            alpha = response%norm()
+            if (nid == 0) then
+                write(*, *) "SQUARE-NORM OF THE RESPONSE :", alpha**2
+            endif
 
     		call nek_end()
     	endif
@@ -39,6 +42,25 @@ c-----------------------------------------------------------------------
       return
       end
 c-----------------------------------------------------------------------
+        subroutine make_actuator(forcing)
+            use neklab
+            include 'SIZE'
+            include 'TOTAL'
+
+            type(nek_dvector), intent(out) :: forcing
+            real(kind=dp), parameter :: xcenter = 0.6_dp, width = 0.6_dp, ycenter = 1.0_dp
+            integer :: i, j, k, n
+            
+            n = nx1*ny1*nz1*nelt
+            do i = 1, n
+                x = xm1(i, 1, 1, 1)
+                y = ym1(i, 1, 1, 1)
+                forcing%vy(i) = exp(-((x-xcenter)**2 + (y-ycenter)**2)/width**2)
+            enddo
+
+            return
+        end
+
       subroutine userf (ix,iy,iz,ieg)
       use neklab, only: neklab_forcing
       include 'SIZE'
